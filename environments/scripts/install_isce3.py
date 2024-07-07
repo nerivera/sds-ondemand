@@ -422,7 +422,8 @@ def get_prev_version() -> str | None:
 
     
 def get_instance_type() -> str:
-    """Return the instance type corresponding to the running environment."""
+    """Return the instance type corresponding to the running environment.
+    Does not depend on OPTIONS."""
     args = ['command', '-v', 'nvcc']
     cp = subprocess.run(args)
     return 'GPU' if cp.returncode == 0 else 'CPU'
@@ -439,7 +440,8 @@ def get_var(var: str, env_prefix: pathlib.Path) -> str:
 
 
 def get_home_dir() -> pathlib.Path:
-    """Return the user's home directory."""
+    """Return the user's home directory.
+    Does not depend on OPTIONS."""
     try:
         return pathlib.Path.home()
     except RuntimeError:
@@ -448,7 +450,8 @@ def get_home_dir() -> pathlib.Path:
 
 
 def get_this_repo_dir() -> pathlib.Path:
-    """Return the sds-ondemand repo directory."""
+    """Return the sds-ondemand repo directory.
+    Does not depend on OPTIONS."""
     # If the location of the install_isce3.py script is changed, this function should be updated accordingly.
     return get_this_file().parent.parent.parent
 
@@ -544,7 +547,7 @@ def eprint_completed_process(cp: subprocess.CompletedProcess) -> None:
 def resolved_path(path: str) -> pathlib.Path:
     """Convert a path string to its resolved Path object.
     If the path doesn't exist, resolve as far as possible.
-    Must not depend on OPTIONS."""
+    Does not depend on OPTIONS."""
     try:
         return pathlib.Path(path).resolve()
     except RuntimeError:
@@ -555,7 +558,7 @@ def resolved_path(path: str) -> pathlib.Path:
 def extant_file(path: str) -> pathlib.Path:
     """Convert a path string for an extant file to its resolved Path object.
     If the path doesn't correspond to a file, exit with a helpful error message.
-    Must not depend on OPTIONS."""
+    Does not depend on OPTIONS."""
     try:
         result = pathlib.Path(path).resolve(strict=True)
     except FileNotFoundError:
