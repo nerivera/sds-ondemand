@@ -425,7 +425,7 @@ def get_instance_type() -> str:
     """Return the instance type corresponding to the running environment.
     Does not depend on OPTIONS."""
     args = ['command', '-v', 'nvcc']
-    cp = subprocess.run(args)
+    cp = subprocess.run(args, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
     return 'GPU' if cp.returncode == 0 else 'CPU'
 
 
