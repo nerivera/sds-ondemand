@@ -2,6 +2,7 @@
 # The shebang should reflect the base environment (see BASE_ENV_PREFIX)
 
 import argparse
+import os
 import pathlib
 import signal
 import subprocess
@@ -9,6 +10,7 @@ import sys
 
 BASE_ENV_PREFIX = pathlib.Path('/opt/conda')  # Conda base environment prefix
 CMAKE_CACHE_NAME = 'CMakeCache.txt'  # The filename for the CMake cache, assumed to be in the build dir
+ENV_PREFIX_VAR = 'CONDA_PREFIX'  # The environment varialbe for the active Conda environment prefix
 KEYBOARD_INTERRUPT_ES = 130  # Exit status to use for keyboard interrupt
 ERROR_ES = 1  # Exit status to use for other caught errors
 
@@ -64,7 +66,24 @@ def main() -> None:
     global OPTIONS
     OPTIONS = get_options()
     
-    print(f"Detected {OPTIONS.instance_type} instance")
+    if OPTIONS.env_prefix.exists():
+        if OPTIONS.env_prefix.is_dir():
+            if OPTIONS.env_prefix.samefile(BASE_ENV_PREFIX):
+                print("You may not install ISCE3 into the base environment.")
+                return
+            active_prefix = get_env_prefix()
+            if active_prefix is not None and active_prefix.samefile(OPTIONS.env_prefix):
+                print("You may not install ISCE3 into the active environment.")
+                print("Switch to a different environment (or deactivate Conda) and try again.")
+                return
+        else:
+            print(f"There is a non-directory at {OPTIONS.env_prefix}.")
+            if query("Would you like to remove it?"):
+                run_command(['rm', '-f', OPTIONS.env_prefix],
+                            f"error: removing non-directory at {OPTIONS.env_prefix} failed")
+            else:
+                return
+    
     prev_version = get_prev_version()
     print(f"Going to install: {OPTIONS.version_str}")
     if prev_version is None:
@@ -133,6 +152,7 @@ def get_options() -> argparse.Namespace:
     Catch any usage errors or help requests and exit after handling them appropriately.
     Does not depend on OPTIONS."""
     instance_type = get_instance_type()
+    print(f"Detected {instance_type} instance.")
     defaults = get_defaults(instance_type)
     parser = argparse.ArgumentParser(
         description="Install or switch versions of ISCE3",
@@ -275,7 +295,7 @@ def working_tree_is_clean() -> bool:
         
 def discard_uncommitted_changes() -> None:
     """Discard uncommitted changes in the ISCE3 Git repo."""
-    args = [str(OPTIONS.git_exec), 'reset', '--hard']
+    args = [OPTIONS.git_exec, 'reset', '--hard']
     run_command(args, "error: discarding uncommitted changes failed", cwd=OPTIONS.repo_dir)
         
 
@@ -297,21 +317,21 @@ def ensure_available_repo_dir() -> None:
 
 def clone_repo() -> None:
     """Clone the ISCE3 repository to its indended directory."""
-    args = [str(OPTIONS.git_exec), 'clone', OPTIONS.repo_url, str(OPTIONS.repo_dir)]
+    args = [OPTIONS.git_exec, 'clone', OPTIONS.repo_url, OPTIONS.repo_dir]
     run_command(args, f"error: cloning the ISCE3 Git repo to {OPTIONS.repo_dir} failed")
 
 
 def check_out_version() -> None:
     """Check out the ISCE3 repository's desired version.
     The version must not be the working tree."""
-    args = [str(OPTIONS.git_exec), 'checkout', OPTIONS.version]
+    args = [OPTIONS.git_exec, 'checkout', OPTIONS.version]
     run_command(args, "error: checking out the given ISCE3 version failed", cwd=OPTIONS.repo_dir)
 
 
 def current_branch_path() -> str | None:
     """Return the path to the current branch relative to the .git directory.
     If there is no current branch, return None."""
-    args = [str(OPTIONS.git_exec), 'symbolic-ref', '-q', 'HEAD']
+    args = [OPTIONS.git_exec, 'symbolic-ref', '-q', 'HEAD']
     cp = subprocess.run(args, capture_output=True, cwd=OPTIONS.repo_dir, text=True)
     # -q makes it so a nonzero exit code with no standard error implies no current branch
     if cp.returncode < 0 or (cp.returncode > 0 and cp.stderr):
@@ -327,14 +347,14 @@ def current_branch_path() -> str | None:
 def get_upstream_branch(branch_path: str) -> str | None:
     """Return the name of the upstream branch for the given branch (a path relative to the .git directory).
     If the given branch has no upstream branch, return None."""
-    args = [str(OPTIONS.git_exec), 'for-each-ref', '--format=%(upstream:short)', branch_path]
+    args = [OPTIONS.git_exec, 'for-each-ref', '--format=%(upstream:short)', branch_path]
     upstream_branch = run_command(args, "error: finding the upstream branch for the ISCE3 version failed", cwd=OPTIONS.repo_dir).strip()
     return upstream_branch if upstream_branch else None
 
 
 def merge_into_current_branch(branch: str) -> None:
     """Merge the given branch into the current branch."""
-    args = [str(OPTIONS.git_exec), 'merge', branch]
+    args = [OPTIONS.git_exec, 'merge', branch]
     run_command(args, (f"error: merging branch {branch} into ISCE3 version branch failed\n"
                        "if you made any local commits, you may need to resolve merge conflicts"), cwd=OPTIONS.repo_dir)
 
@@ -356,7 +376,7 @@ def create_env() -> None:
 
 def add_env() -> None:
     """Update the ipykernel to recognize the ISCE3 Conda environment."""
-    args = ['python', '-m', 'ipykernel', 'install', '--user', '--name', OPTIONS.env_name, '--display-name', OPTIONS.env_name]
+    args = [BASE_ENV_PREFIX / 'bin' / 'python', '-m', 'ipykernel', 'install', '--user', '--name', OPTIONS.env_name, '--display-name', OPTIONS.env_name]
     run_command(args, "error: udating the ipykernel to add the ISCE3 Conda environment failed", env_prefix=OPTIONS.env_prefix)
 
     
@@ -370,7 +390,7 @@ def set_env_vars() -> None:
         'PYTHONPATH': f"{OPTIONS.build_dir / 'packages'}:{get_var('PYTHONPATH', BASE_ENV_PREFIX)}",
         'LD_LIBRARY_PATH': f"{OPTIONS.build_dir / 'lib64'}:{get_var('LD_LIBRARY_PATH', BASE_ENV_PREFIX)}",
     }
-    args = [str(OPTIONS.conda_exec), 'env', 'config', 'vars', 'set', '-p', str(OPTIONS.env_prefix)]
+    args = [OPTIONS.conda_exec, 'env', 'config', 'vars', 'set', '-p', OPTIONS.env_prefix]
     args += [f'{k}={v}' for k, v in env_vars.items()]
     run_command(args, "error: setting environment variables in the ISCE3 Conda environment failed")
 
@@ -378,7 +398,7 @@ def set_env_vars() -> None:
     
 def make_build_dir() -> None:
     """Create the build directory if it doesn't already exist."""
-    args = ['mkdir', '-p', str(OPTIONS.build_dir)]
+    args = ['mkdir', '-p', OPTIONS.build_dir]
     run_command(args, f"error: creating build directory {OPTIONS.build_dir} failed")
 
 
@@ -391,13 +411,13 @@ def clear_cmake_cache() -> None:
         eprint(f"error: the expected CMake cache file path ({cmake_cache}) is occupied by a non-file")
         eprint(f"try removing it or moving it to another location")
         sys.exit(ERROR_ES)
-    args = ['rm', '-f', str(cmake_cache)]
+    args = ['rm', '-f', cmake_cache]
     run_command(args, f"error: clearing the cmake cache (removing {cmake_cache}) failed")
 
 
 def build_make_files() -> None:
     """Build the files required for Make to install ISCE3."""
-    args = [str(OPTIONS.cmake_exec), f'-DCMAKE_BUILD_TYPE={OPTIONS.cmake_build_type}', f'-DCMAKE_INSTALL_PREFIX={OPTIONS.build_dir}', str(OPTIONS.repo_dir)]
+    args = [OPTIONS.cmake_exec, f'-DCMAKE_BUILD_TYPE={OPTIONS.cmake_build_type}', f'-DCMAKE_INSTALL_PREFIX={OPTIONS.build_dir}', OPTIONS.repo_dir]
     # Unsure if cwd or env_prefix is necessary
     run_command(args, "error: building ISCE3 Make files with CMake failed", cwd=OPTIONS.build_dir, env_prefix=OPTIONS.env_prefix)
 
@@ -405,14 +425,20 @@ def build_make_files() -> None:
 def install() -> None:
     """Run the Make target `install' to install ISCE3."""
     if OPTIONS.make_jobs is None:
-        args = [str(OPTIONS.make_exec), '-j', 'install']
+        args = [OPTIONS.make_exec, '-j', 'install']
     else:
-        args = [str(OPTIONS.make_exec), '-j', str(MAKE_JOBS), 'install']
+        args = [OPTIONS.make_exec, '-j', str(OPTIONS.make_jobs), 'install']
     # Unsure if env_prefix is necessary
     run_command(args, "error: installing ISCE3 with Make target `install' failed", cwd=OPTIONS.build_dir, env_prefix=OPTIONS.env_prefix)
 
 
     
+def get_env_prefix() -> pathlib.Path | None:
+    """Return the active Conda environment prefix.
+    If Conda is inactive, return None."""
+    return pathlib.Path(os.environ[ENV_PREFIX_VAR]) if ENV_PREFIX_VAR in os.environ else None
+
+
 def get_prev_version() -> str | None:
     """Return the previously installed ISCE3 version.
     If the version cannot be determined or doesn't exist, return None."""
@@ -469,15 +495,15 @@ def get_this_file() -> pathlib.Path:
 
 
 
-def run_command(args: list[str], error_message: str = None, cwd: pathlib.Path = None, env_prefix: pathlib.Path = None,
-                exit=True) -> str | None:
+def run_command(args: list[str], error_message: str | None = None, cwd: pathlib.Path | None = None,
+                env_prefix: pathlib.Path | None = None, exit: bool = True) -> str | None:
     """Run the command given by args and return its output if successful.
     Otherwise, if exit is True, exit with the given error message and additional details, and if exit is False, return None.
     cwd overrides the current working directory when the command is run.
     env_prefix overrides the Conda environment in which the command is run.
     """
     if env_prefix is not None:
-        args = [OPTIONS.mamba_exec, 'run', '-p', str(env_prefix)] + args
+        args = [OPTIONS.mamba_exec, 'run', '-p', env_prefix] + args
     cp = subprocess.run(args, capture_output=True, cwd=cwd, text=True)
     if cp.returncode != 0:
         if not exit:
